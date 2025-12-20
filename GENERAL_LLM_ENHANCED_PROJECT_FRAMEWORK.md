@@ -177,7 +177,27 @@ Every LLM-enhanced project must have these documents at the root level. The LLM 
 
 ---
 
-### 4. PHASE_N_TASKS.md
+### 4. LOGGING.md (Recommended)
+
+**Purpose:** Define logging and health check standards.
+
+**Must include:**
+- Log levels and when to use each
+- Structured log format
+- What to log vs what NOT to log (security)
+- Correlation ID strategy
+- Health check endpoints and response formats
+
+**Why it matters:**
+- Debugging production issues requires good logs
+- Health checks enable reliable deployments
+- Consistent logging makes issues easier to find
+
+See the standalone LOGGING.md template for full details.
+
+---
+
+### 5. PHASE_N_TASKS.md
 
 **Purpose:** Detailed task breakdown for current phase.
 
@@ -564,6 +584,7 @@ finished tasks and note any blockers."
 
 ## Checklist: Is Your Project LLM-Ready?
 
+### Required
 - [ ] ROADMAP.md exists and defines all phases
 - [ ] ARCHITECTURE.md explains system structure
 - [ ] CONVENTIONS.md defines code standards
@@ -574,6 +595,12 @@ finished tasks and note any blockers."
 - [ ] All three scripts exit 0 on a fresh clone
 - [ ] A new contributor (human or LLM) can start in <10 minutes
 
+### Recommended for Production
+- [ ] LOGGING.md defines logging standards
+- [ ] Health check endpoints exist
+- [ ] Structured logging implemented
+- [ ] Correlation IDs for request tracing
+
 ---
 
 ## Quick Reference
@@ -583,12 +610,17 @@ Document Purpose:
   ROADMAP.md        → What are we building?
   ARCHITECTURE.md   → How is it structured?
   CONVENTIONS.md    → How do we write code?
+  LOGGING.md        → How do we log and monitor?
   PHASE_N_TASKS.md  → What do we do next?
 
 Script Purpose:
   init.sh  → Setup    → Exit 0 = ready
   test.sh  → Verify   → Exit 0 = safe to deploy  
   run.sh   → Develop  → Starts everything
+
+Health Endpoints:
+  /health/live   → Is process alive?
+  /health/ready  → Can handle requests?
 
 Session Flow:
   1. LLM reads all docs

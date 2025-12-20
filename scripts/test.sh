@@ -14,6 +14,7 @@
 #   lint        Run linting only
 #   format      Run format checking only
 #   type-check  Run type checking only
+#   health      Verify health check endpoints
 #
 # Options:
 #   --quick     Skip slow checks (type-check, format)
@@ -49,6 +50,7 @@ show_help() {
     echo "  lint        Run linting only"
     echo "  format      Run format checking only"
     echo "  type-check  Run type checking only"
+    echo "  health      Verify health check endpoints"
     echo ""
     echo "Options:"
     echo "  --quick     Skip slow checks (type-check, format)"
@@ -64,7 +66,7 @@ MODE="all"
 
 for arg in "$@"; do
     case $arg in
-        backend|frontend|lint|format|type-check|all)
+        backend|frontend|lint|format|type-check|health|all)
             MODE="$arg"
             ;;
         --quick|-q)
@@ -544,6 +546,161 @@ run_go_format() {
 }
 
 # =============================================================================
+# HEALTH CHECK TESTS
+# =============================================================================
+
+# Configuration for health checks
+HEALTH_CHECK_PORT=${HEALTH_CHECK_PORT:-${BACKEND_PORT:-8000}}
+HEALTH_CHECK_TIMEOUT=${HEALTH_CHECK_TIMEOUT:-30}
+HEALTH_LIVE_PATH=${HEALTH_LIVE_PATH:-/health/live}
+HEALTH_READY_PATH=${HEALTH_READY_PATH:-/health/ready}
+
+# Process tracking for health check mode
+HEALTH_TEST_PID=""
+HEALTH_TEST_LOG="/tmp/${PROJECT_NAME:-project}_health_test.log"
+
+cleanup_health_test() {
+    if [ -n "$HEALTH_TEST_PID" ]; then
+        kill "$HEALTH_TEST_PID" 2>/dev/null || true
+        wait "$HEALTH_TEST_PID" 2>/dev/null || true
+        HEALTH_TEST_PID=""
+    fi
+}
+
+start_backend_for_health_test() {
+    local python_dir=$(get_python_dir)
+    local venv_path=$(get_venv_path)
+    
+    if is_python_enabled && [ -d "$venv_path" ]; then
+        source "$venv_path/bin/activate"
+        cd "$python_dir"
+        
+        local run_cmd=""
+        if [ -n "$RUN_PYTHON_CMD" ]; then
+            run_cmd="$RUN_PYTHON_CMD"
+        elif [ -f "main.py" ]; then
+            run_cmd="uvicorn main:app --port $HEALTH_CHECK_PORT --host 0.0.0.0"
+        elif [ -f "app.py" ]; then
+            if grep -q "flask\|Flask" app.py 2>/dev/null; then
+                run_cmd="flask run --port $HEALTH_CHECK_PORT --host 0.0.0.0"
+            else
+                run_cmd="python app.py"
+            fi
+        elif [ -f "manage.py" ]; then
+            run_cmd="python manage.py runserver 0.0.0.0:$HEALTH_CHECK_PORT"
+        fi
+        
+        if [ -n "$run_cmd" ]; then
+            eval "$run_cmd" > "$HEALTH_TEST_LOG" 2>&1 &
+            HEALTH_TEST_PID=$!
+            cd "$PROJECT_ROOT"
+            return 0
+        fi
+        
+        cd "$PROJECT_ROOT"
+    fi
+    
+    if is_rust_enabled && check_command cargo; then
+        local run_cmd="${RUN_RUST_CMD:-cargo run}"
+        eval "$run_cmd" > "$HEALTH_TEST_LOG" 2>&1 &
+        HEALTH_TEST_PID=$!
+        return 0
+    fi
+    
+    if is_go_enabled && check_command go; then
+        local run_cmd="${RUN_GO_CMD:-go run .}"
+        eval "$run_cmd" > "$HEALTH_TEST_LOG" 2>&1 &
+        HEALTH_TEST_PID=$!
+        return 0
+    fi
+    
+    return 1
+}
+
+run_health_checks() {
+    log_header "Health Check Verification"
+    
+    local base_url="http://localhost:$HEALTH_CHECK_PORT"
+    local live_url="${base_url}${HEALTH_LIVE_PATH}"
+    local ready_url="${base_url}${HEALTH_READY_PATH}"
+    
+    # Check if service is already running
+    local service_was_running=false
+    if check_port "$HEALTH_CHECK_PORT"; then
+        log_info "Service already running on port $HEALTH_CHECK_PORT"
+        service_was_running=true
+    else
+        # Start the service
+        log_step "Starting backend service for health check testing..."
+        
+        if ! start_backend_for_health_test; then
+            log_error "Could not start backend service for health check testing"
+            log_info "Make sure you have run './scripts/init.sh' first"
+            EXIT_CODE=1
+            return 1
+        fi
+        
+        log_info "Waiting for service to start (PID: $HEALTH_TEST_PID)..."
+        
+        # Wait for service to become healthy
+        if ! wait_for_health "$live_url" "$HEALTH_CHECK_TIMEOUT"; then
+            log_error "Service did not become healthy within ${HEALTH_CHECK_TIMEOUT}s"
+            log_info "Check logs: $HEALTH_TEST_LOG"
+            cleanup_health_test
+            EXIT_CODE=1
+            return 1
+        fi
+        
+        log_success "Service started and responding"
+    fi
+    
+    echo ""
+    
+    # Test liveness endpoint
+    log_step "Testing liveness endpoint: $live_url"
+    local live_status
+    live_status=$(get_health_status "$live_url")
+    
+    if [ "$live_status" = "unreachable" ]; then
+        log_error "Liveness endpoint unreachable"
+        EXIT_CODE=1
+    elif [ "$live_status" = "ok" ] || [ "$live_status" = "degraded" ]; then
+        log_success "Liveness check passed (status: $live_status)"
+    else
+        log_error "Liveness check failed (status: $live_status)"
+        EXIT_CODE=1
+    fi
+    
+    # Test readiness endpoint
+    log_step "Testing readiness endpoint: $ready_url"
+    local ready_status
+    ready_status=$(get_health_status "$ready_url")
+    
+    if [ "$ready_status" = "unreachable" ]; then
+        log_warn "Readiness endpoint not found at $ready_url"
+        log_info "This is optional but recommended. See LOGGING.md for details."
+    elif [ "$ready_status" = "ok" ]; then
+        log_success "Readiness check passed (status: $ready_status)"
+    elif [ "$ready_status" = "degraded" ]; then
+        log_warn "Readiness check returned degraded status"
+        log_info "Some non-critical dependencies may be unavailable"
+    else
+        log_error "Readiness check failed (status: $ready_status)"
+        EXIT_CODE=1
+    fi
+    
+    # Cleanup if we started the service
+    if [ "$service_was_running" = false ]; then
+        echo ""
+        log_step "Shutting down test service..."
+        cleanup_health_test
+        log_success "Test service stopped"
+    fi
+    
+    echo ""
+}
+
+# =============================================================================
 # COMPOSITE RUNNERS
 # =============================================================================
 
@@ -683,6 +840,10 @@ case $MODE in
     
     type-check)
         run_all_typecheck
+        ;;
+    
+    health)
+        run_health_checks
         ;;
     
     all|*)

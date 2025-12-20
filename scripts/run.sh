@@ -30,6 +30,11 @@ source "$SCRIPT_DIR/_common.sh"
 BACKEND_PORT=${BACKEND_PORT:-8000}
 FRONTEND_PORT=${FRONTEND_PORT:-5173}
 
+# Health check configuration
+HEALTH_CHECK_ENABLED=${HEALTH_CHECK_ENABLED:-true}
+HEALTH_CHECK_TIMEOUT=${HEALTH_CHECK_TIMEOUT:-30}
+HEALTH_LIVE_PATH=${HEALTH_LIVE_PATH:-/health/live}
+
 # Process tracking
 BACKEND_PID=""
 FRONTEND_PID=""
@@ -57,8 +62,11 @@ show_help() {
     echo "  --help      Show this help message"
     echo ""
     echo "Environment variables:"
-    echo "  BACKEND_PORT   Port for backend server (default: 8000)"
-    echo "  FRONTEND_PORT  Port for frontend server (default: 5173)"
+    echo "  BACKEND_PORT         Port for backend server (default: 8000)"
+    echo "  FRONTEND_PORT        Port for frontend server (default: 5173)"
+    echo "  HEALTH_CHECK_ENABLED Wait for health endpoint (default: true)"
+    echo "  HEALTH_CHECK_TIMEOUT Seconds to wait for health (default: 30)"
+    echo "  HEALTH_LIVE_PATH     Health endpoint path (default: /health/live)"
     exit 0
 }
 
@@ -104,6 +112,53 @@ cleanup() {
 }
 
 trap cleanup SIGINT SIGTERM
+
+# =============================================================================
+# HEALTH CHECK HELPERS
+# =============================================================================
+
+# Wait for a service to become healthy after starting
+# Usage: wait_for_service_healthy "backend" $PORT $PID
+wait_for_service_healthy() {
+    local service_name=$1
+    local port=$2
+    local pid=$3
+    local health_url="http://localhost:${port}${HEALTH_LIVE_PATH}"
+    
+    if [ "$HEALTH_CHECK_ENABLED" != "true" ]; then
+        return 0
+    fi
+    
+    log_step "Waiting for $service_name to become healthy..."
+    
+    local start=$(date +%s)
+    local timeout=$HEALTH_CHECK_TIMEOUT
+    
+    while true; do
+        # Check if process is still running
+        if ! kill -0 "$pid" 2>/dev/null; then
+            log_error "$service_name process exited unexpectedly"
+            log_info "Check logs for details"
+            return 1
+        fi
+        
+        # Try health check
+        if curl -sf "$health_url" > /dev/null 2>&1; then
+            log_success "$service_name is healthy"
+            return 0
+        fi
+        
+        local elapsed=$(($(date +%s) - start))
+        if [ $elapsed -ge $timeout ]; then
+            log_warn "$service_name did not respond to health check within ${timeout}s"
+            log_info "Service may still be starting or health endpoint not implemented"
+            log_info "See LOGGING.md for health check implementation details"
+            return 0  # Don't fail, just warn
+        fi
+        
+        sleep 1
+    done
+}
 
 # =============================================================================
 # BACKEND STARTERS
@@ -157,9 +212,15 @@ start_python_backend() {
     
     cd "$PROJECT_ROOT"
     
-    log_success "Python backend started (PID: $BACKEND_PID)"
-    log_info "  URL: http://localhost:$BACKEND_PORT"
+    log_info "Python backend starting (PID: $BACKEND_PID)"
     log_info "  Log: tail -f $BACKEND_LOG"
+    
+    # Wait for health check
+    if wait_for_service_healthy "Python backend" "$BACKEND_PORT" "$BACKEND_PID"; then
+        log_info "  URL: http://localhost:$BACKEND_PORT"
+    else
+        return 1
+    fi
 }
 
 start_rust_backend() {
@@ -175,8 +236,15 @@ start_rust_backend() {
     eval "$run_cmd" > "$BACKEND_LOG" 2>&1 &
     BACKEND_PID=$!
     
-    log_success "Rust backend started (PID: $BACKEND_PID)"
+    log_info "Rust backend starting (PID: $BACKEND_PID)"
     log_info "  Log: tail -f $BACKEND_LOG"
+    
+    # Wait for health check
+    if wait_for_service_healthy "Rust backend" "$BACKEND_PORT" "$BACKEND_PID"; then
+        log_info "  URL: http://localhost:$BACKEND_PORT"
+    else
+        return 1
+    fi
 }
 
 start_go_backend() {
@@ -192,8 +260,15 @@ start_go_backend() {
     eval "$run_cmd" > "$BACKEND_LOG" 2>&1 &
     BACKEND_PID=$!
     
-    log_success "Go backend started (PID: $BACKEND_PID)"
+    log_info "Go backend starting (PID: $BACKEND_PID)"
     log_info "  Log: tail -f $BACKEND_LOG"
+    
+    # Wait for health check
+    if wait_for_service_healthy "Go backend" "$BACKEND_PORT" "$BACKEND_PID"; then
+        log_info "  URL: http://localhost:$BACKEND_PORT"
+    else
+        return 1
+    fi
 }
 
 # =============================================================================
@@ -238,9 +313,45 @@ start_node_frontend() {
     
     cd "$PROJECT_ROOT"
     
-    log_success "Node.js frontend started (PID: $FRONTEND_PID)"
-    log_info "  URL: http://localhost:$FRONTEND_PORT"
+    log_info "Node.js frontend starting (PID: $FRONTEND_PID)"
     log_info "  Log: tail -f $FRONTEND_LOG"
+    
+    # Wait for frontend to be ready (just check if port responds)
+    if [ "$HEALTH_CHECK_ENABLED" = "true" ]; then
+        log_step "Waiting for frontend to become ready..."
+        local start=$(date +%s)
+        local ready=false
+        
+        while true; do
+            # Check if process is still running
+            if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
+                log_error "Frontend process exited unexpectedly"
+                return 1
+            fi
+            
+            # Check if port is responding
+            if curl -sf "http://localhost:$FRONTEND_PORT" > /dev/null 2>&1; then
+                ready=true
+                break
+            fi
+            
+            local elapsed=$(($(date +%s) - start))
+            if [ $elapsed -ge $HEALTH_CHECK_TIMEOUT ]; then
+                break
+            fi
+            
+            sleep 1
+        done
+        
+        if [ "$ready" = true ]; then
+            log_success "Frontend is ready"
+        else
+            log_warn "Frontend did not respond within ${HEALTH_CHECK_TIMEOUT}s"
+            log_info "Service may still be starting"
+        fi
+    fi
+    
+    log_info "  URL: http://localhost:$FRONTEND_PORT"
 }
 
 # =============================================================================

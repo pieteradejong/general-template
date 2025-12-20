@@ -93,6 +93,72 @@ require_command() {
     fi
 }
 
+# Wait for a health endpoint to respond
+# Usage: wait_for_health "http://localhost:8000/health/live" [timeout_seconds]
+# Returns: 0 if healthy, 1 if timeout
+wait_for_health() {
+    local url=$1
+    local timeout=${2:-30}
+    local start=$(date +%s)
+    
+    while true; do
+        if curl -sf "$url" > /dev/null 2>&1; then
+            return 0
+        fi
+        
+        local elapsed=$(($(date +%s) - start))
+        if [ $elapsed -ge $timeout ]; then
+            return 1
+        fi
+        
+        sleep 1
+    done
+}
+
+# Check health endpoint and return status
+# Usage: check_health "http://localhost:8000/health/ready"
+# Returns: 0 if status is ok/degraded, 1 if error or unreachable
+check_health() {
+    local url=$1
+    local response
+    
+    response=$(curl -sf "$url" 2>/dev/null) || return 1
+    
+    # Check if response contains a valid status
+    if echo "$response" | grep -qE '"status"\s*:\s*"(ok|degraded)"'; then
+        return 0
+    elif echo "$response" | grep -qE '"status"\s*:\s*"error"'; then
+        return 1
+    fi
+    
+    # If no status field, just check HTTP success (already passed curl -f)
+    return 0
+}
+
+# Get health check response details
+# Usage: get_health_status "http://localhost:8000/health/ready"
+# Outputs: status value (ok, degraded, error) or "unreachable"
+get_health_status() {
+    local url=$1
+    local response
+    
+    response=$(curl -sf "$url" 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo "unreachable"
+        return
+    fi
+    
+    # Extract status from JSON
+    local status
+    status=$(echo "$response" | grep -oE '"status"\s*:\s*"[^"]+"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    
+    if [ -n "$status" ]; then
+        echo "$status"
+    else
+        echo "ok"  # Assume ok if endpoint responds but no status field
+    fi
+}
+
 # =============================================================================
 # STACK DETECTION FUNCTIONS
 # =============================================================================
