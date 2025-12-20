@@ -1,1 +1,2 @@
-# general-template
+# GENERAL LLM-ENHANCED PROJECT TEMPLATE
+
