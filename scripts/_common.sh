@@ -12,24 +12,27 @@ COMMON_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$( cd "$COMMON_DIR/.." && pwd )"
 
 # =============================================================================
-# COLORS
+# TERMINAL COLORS (readable on dark backgrounds)
 # =============================================================================
+# Using bright variants (1;3Xm) instead of dark (0;3Xm) for readability
 
-# Check if colors should be used (only when outputting to a terminal)
 if [ -t 1 ]; then
-    RED='\033[0;31m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[1;33m'
-    BLUE='\033[0;34m'
-    CYAN='\033[0;36m'
-    BOLD='\033[1m'
-    NC='\033[0m' # No Color
+    RED='\033[1;31m'       # Bright red - errors
+    GREEN='\033[1;32m'     # Bright green - success
+    YELLOW='\033[1;33m'    # Bright yellow - warnings
+    BLUE='\033[1;34m'      # Bright blue - headers, info
+    CYAN='\033[1;36m'      # Bright cyan - steps, actions
+    WHITE='\033[1;37m'     # Bright white - emphasis
+    BOLD='\033[1m'         # Bold text
+    NC='\033[0m'           # No Color (reset)
 else
+    # No colors when not outputting to a terminal (e.g., piped to file)
     RED=''
     GREEN=''
     YELLOW=''
     BLUE=''
     CYAN=''
+    WHITE=''
     BOLD=''
     NC=''
 fi
